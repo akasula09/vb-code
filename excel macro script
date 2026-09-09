@@ -37,7 +37,7 @@ Private Const GEMINI_API_KEY As String = _
 
 ' Change this model name if Google changes availability.
 Private Const GEMINI_MODEL As String = _
-    "gemini-3.5-flash"
+    "gemini-1.5-flash"
 
 Private Const VK_CONTROL As Long = &H11
 Private Const VK_LWIN As Long = &H5B
@@ -295,7 +295,7 @@ CaptureFailed:
 End Function
 
 '==================================================
-' Send request to Gemini
+' Send request to Gemini via REST API
 '==================================================
 
 Private Function SendToGemini( _
@@ -311,9 +311,9 @@ Private Function SendToGemini( _
     On Error GoTo RequestFailed
 
     endpoint = _
-        "https://generativelanguage.googleapis.com/v1beta/models/" & _
+        "https://generativelanguage.googleapis.com/v1/models/" & _
         GEMINI_MODEL & ":generateContent?key=" & _
-        UrlEncode(GEMINI_API_KEY)
+        GEMINI_API_KEY
 
     combinedPrompt = _
         "You are assisting a user from Microsoft Excel." & _
@@ -326,7 +326,6 @@ Private Function SendToGemini( _
             "{" & _
                 """contents"":[" & _
                     "{" & _
-                        """role"":""user""," & _
                         """parts"":[" & _
                             "{""text"":""" & _
                                 JsonEscape(combinedPrompt) & _
@@ -339,29 +338,20 @@ Private Function SendToGemini( _
                             "}}" & _
                         "]" & _
                     "}" & _
-                "]," & _
-                """generationConfig"":{" & _
-                    """temperature"":0.2," & _
-                    """maxOutputTokens"":4096" & _
-                "}" & _
+                "]" & _
             "}"
     Else
         requestBody = _
             "{" & _
                 """contents"":[" & _
                     "{" & _
-                        """role"":""user""," & _
                         """parts"":[" & _
                             "{""text"":""" & _
                                 JsonEscape(combinedPrompt) & _
                             """}" & _
                         "]" & _
                     "}" & _
-                "]," & _
-                """generationConfig"":{" & _
-                    """temperature"":0.2," & _
-                    """maxOutputTokens"":4096" & _
-                "}" & _
+                "]" & _
             "}"
     End If
 
