@@ -1,0 +1,562 @@
+Option Explicit
+
+'==================================================
+' Windows API declarations must be before all Subs
+'==================================================
+
+#If VBA7 Then
+
+Private Declare PtrSafe Function GetAsyncKeyState Lib "user32" ( _
+    ByVal vKey As Long) As Integer
+
+Private Declare PtrSafe Sub keybd_event Lib "user32" ( _
+    ByVal bVk As Byte, _
+    ByVal bScan As Byte, _
+    ByVal dwFlags As Long, _
+    ByVal dwExtraInfo As LongPtr)
+
+#Else
+
+Private Declare Function GetAsyncKeyState Lib "user32" ( _
+    ByVal vKey As Long) As Integer
+
+Private Declare Sub keybd_event Lib "user32" ( _
+    ByVal bVk As Byte, _
+    ByVal bScan As Byte, _
+    ByVal dwFlags As Long, _
+    ByVal dwExtraInfo As Long)
+
+#End If
+
+'==================================================
+' Configuration
+'==================================================
+
+Private Const GEMINI_API_KEY As String = _
+    "AQ.Ab8RN6IbMHmUeJUHz6vyX0164K0NnOj4x7dpAlRlvSCLn5Jagg"
+
+' Change this model name if Google changes availability.
+Private Const GEMINI_MODEL As String = _
+    "gemini-3.5-flash"
+
+Private Const VK_CONTROL As Long = &H11
+Private Const VK_LWIN As Long = &H5B
+Private Const VK_R As Long = &H52
+
+
+Private Const VK_SNAPSHOT As Byte = &H2C
+Private Const KEYEVENTF_KEYUP As Long = &H2
+
+Private watcherRunning As Boolean
+
+'==================================================
+' Start and stop macros
+'==================================================
+
+Public Sub StartGeminiHotkey()
+
+    If GEMINI_API_KEY = "PASTE_YOUR_GEMINI_API_KEY_HERE" Then
+        MsgBox "Paste your Gemini API key into GEMINI_API_KEY first.", _
+               vbExclamation, "Missing API key"
+        Exit Sub
+    End If
+
+    If watcherRunning Then
+        MsgBox "The Gemini hotkey watcher is already running.", _
+               vbInformation
+        Exit Sub
+    End If
+
+    watcherRunning = True
+
+    MsgBox _
+        "Gemini hotkey watcher started." & vbCrLf & vbCrLf & _
+        "Press Ctrl+Shift+F12 to send a prompt and screenshot." & _
+        vbCrLf & _
+        "Run StopGeminiHotkey to stop the watcher.", _
+        vbInformation, _
+        "Gemini Excel Assistant"
+
+    WatchForHotkey
+
+End Sub
+
+Public Sub StopGeminiHotkey()
+
+    watcherRunning = False
+    Application.StatusBar = False
+
+    MsgBox "Gemini hotkey watcher stopped.", vbInformation
+
+End Sub
+
+'==================================================
+' Keyboard watcher
+'==================================================
+
+Private Sub WatchForHotkey()
+
+    Dim oldHotkeyState As Boolean
+    Dim newHotkeyState As Boolean
+
+    Do While watcherRunning
+
+        DoEvents
+
+        newHotkeyState = _
+            IsKeyDown(VK_CONTROL) And _
+            IsKeyDown(VK_LWIN) And _
+            IsKeyDown(VK_R)
+
+        If newHotkeyState And Not oldHotkeyState Then
+            HandleGeminiRequest
+        End If
+
+        oldHotkeyState = newHotkeyState
+
+        'Approximately 10 checks per second.
+        PauseMilliseconds 100
+
+    Loop
+
+    Application.StatusBar = False
+
+End Sub
+
+Private Function IsKeyDown(ByVal keyCode As Long) As Boolean
+
+    IsKeyDown = ((GetAsyncKeyState(keyCode) And &H8000&) <> 0)
+
+End Function
+
+Private Sub PauseMilliseconds(ByVal milliseconds As Long)
+
+    Dim startTime As Single
+    startTime = Timer
+
+    Do
+        DoEvents
+
+        If Timer < startTime Then
+            startTime = startTime - 86400!
+        End If
+
+    Loop While ((Timer - startTime) * 1000!) < milliseconds
+
+End Sub
+
+'==================================================
+' Prompt, screenshot, and Gemini request
+'==================================================
+
+Private Sub HandleGeminiRequest()
+
+    Dim userPrompt As String
+    Dim screenshotBase64 As String
+    Dim answer As String
+
+    userPrompt = InputBox( _
+        "Enter your prompt for Gemini." & vbCrLf & vbCrLf & _
+        "The current screen will also be sent.", _
+        "Gemini prompt")
+
+    If Len(Trim$(userPrompt)) = 0 Then Exit Sub
+
+    Application.StatusBar = "Capturing screen..."
+
+    If Not CaptureScreenToBase64(screenshotBase64) Then
+        Application.StatusBar = False
+        MsgBox "The screen could not be captured.", _
+               vbExclamation, "Capture failed"
+        Exit Sub
+    End If
+
+    Application.StatusBar = "Sending prompt and screenshot to Gemini..."
+
+    answer = SendToGemini(userPrompt, screenshotBase64)
+
+    Application.StatusBar = False
+
+    If Left$(answer, 6) = "ERROR:" Then
+        MsgBox answer, vbCritical, "Gemini error"
+    Else
+        WriteResponseToSheet userPrompt, answer
+    End If
+
+End Sub
+
+'==================================================
+' Capture the screen using Print Screen and Excel
+'==================================================
+
+Private Function CaptureScreenToBase64( _
+    ByRef outputBase64 As String) As Boolean
+
+    Dim oldSheet As Worksheet
+    Dim temporarySheet As Worksheet
+    Dim chartObject As chartObject
+    Dim temporaryFile As String
+    Dim imageBytes() As Byte
+
+    On Error GoTo CaptureFailed
+
+    Set oldSheet = ActiveSheet
+
+    Application.CutCopyMode = False
+
+    'Press the Windows Print Screen key.
+    keybd_event VK_SNAPSHOT, 0, 0, 0
+    keybd_event VK_SNAPSHOT, 0, KEYEVENTF_KEYUP, 0
+
+    PauseMilliseconds 300
+
+    Set temporarySheet = ThisWorkbook.Worksheets.Add
+    temporarySheet.Visible = xlSheetVeryHidden
+
+    Set chartObject = temporarySheet.ChartObjects.Add( _
+        Left:=0, _
+        Top:=0, _
+        Width:=1200, _
+        Height:=800)
+
+    chartObject.Chart.Paste
+
+    temporaryFile = Environ$("TEMP") & _
+        "\excel_gemini_screen_" & _
+        Format$(Now, "yyyymmdd_hhnnss") & ".png"
+
+    chartObject.Chart.Export _
+        Filename:=temporaryFile, _
+        FilterName:="PNG"
+
+    If Len(Dir$(temporaryFile)) = 0 Then
+        GoTo CaptureFailed
+    End If
+
+    imageBytes = ReadBinaryFile(temporaryFile)
+    outputBase64 = Base64Encode(imageBytes)
+
+    On Error Resume Next
+
+    Kill temporaryFile
+    temporarySheet.Delete
+    oldSheet.Activate
+
+    On Error GoTo 0
+
+    CaptureScreenToBase64 = (Len(outputBase64) > 0)
+    Exit Function
+
+CaptureFailed:
+
+    On Error Resume Next
+
+    If Len(temporaryFile) > 0 Then Kill temporaryFile
+    If Not temporarySheet Is Nothing Then temporarySheet.Delete
+    If Not oldSheet Is Nothing Then oldSheet.Activate
+
+    On Error GoTo 0
+
+    CaptureScreenToBase64 = False
+
+End Function
+
+'==================================================
+' Send request to Gemini
+'==================================================
+
+Private Function SendToGemini( _
+    ByVal userPrompt As String, _
+    ByVal screenshotBase64 As String) As String
+
+    Dim http As Object
+    Dim endpoint As String
+    Dim requestBody As String
+    Dim responseBody As String
+    Dim combinedPrompt As String
+
+    On Error GoTo RequestFailed
+
+    endpoint = _
+        "https://generativelanguage.googleapis.com/v1beta/models/" & _
+        GEMINI_MODEL & ":generateContent?key=" & _
+        UrlEncode(GEMINI_API_KEY)
+
+    combinedPrompt = _
+        "You are assisting a user from Microsoft Excel." & _
+        vbCrLf & vbCrLf & _
+        userPrompt
+
+    requestBody = _
+        "{" & _
+            """contents"":[" & _
+                "{" & _
+                    """role"":""user""," & _
+                    """parts"":[" & _
+                        "{""text"":""" & _
+                            JsonEscape(combinedPrompt) & _
+                        """}," & _
+                        "{""inline_data"":{" & _
+                            """mime_type"":""image/png""," & _
+                            """data"":""" & _
+                                screenshotBase64 & _
+                            """" & _
+                        "}}" & _
+                    "]" & _
+                "}" & _
+            "]," & _
+            """generationConfig"":{" & _
+                """temperature"":0.2," & _
+                """maxOutputTokens"":4096" & _
+            "}" & _
+        "}"
+
+    Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
+
+    http.Open "POST", endpoint, False
+
+    http.SetRequestHeader _
+        "Content-Type", _
+        "application/json"
+
+    http.SetTimeouts _
+        5000, _
+        10000, _
+        30000, _
+        60000
+
+    http.Send requestBody
+
+    responseBody = http.responseText
+
+    If http.Status < 200 Or http.Status >= 300 Then
+        SendToGemini = _
+            "ERROR: Gemini returned HTTP " & _
+            http.Status & vbCrLf & responseBody
+        Exit Function
+    End If
+
+    SendToGemini = ExtractGeminiText(responseBody)
+
+    If Len(SendToGemini) = 0 Then
+        SendToGemini = _
+            "ERROR: Gemini returned no text." & vbCrLf & _
+            responseBody
+    End If
+
+    Exit Function
+
+RequestFailed:
+
+    SendToGemini = "ERROR: " & Err.Description
+
+End Function
+
+'==================================================
+' Extract Gemini text without an external JSON parser
+'==================================================
+
+Private Function ExtractGeminiText(ByVal json As String) As String
+
+    Dim marker As String
+    Dim startPosition As Long
+    Dim endPosition As Long
+    Dim rawText As String
+
+    marker = """text"":"""
+
+    startPosition = InStr(1, json, marker, vbTextCompare)
+
+    If startPosition = 0 Then Exit Function
+
+    startPosition = startPosition + Len(marker)
+
+    endPosition = FindJsonStringEnd(json, startPosition)
+
+    If endPosition = 0 Then Exit Function
+
+    rawText = Mid$( _
+        json, _
+        startPosition, _
+        endPosition - startPosition)
+
+    ExtractGeminiText = JsonUnescape(rawText)
+
+End Function
+
+Private Function FindJsonStringEnd( _
+    ByVal json As String, _
+    ByVal startPosition As Long) As Long
+
+    Dim i As Long
+    Dim slashCount As Long
+    Dim currentCharacter As String
+
+    For i = startPosition To Len(json)
+
+        currentCharacter = Mid$(json, i, 1)
+
+        If currentCharacter = "\" Then
+
+            slashCount = slashCount + 1
+
+        ElseIf currentCharacter = """" Then
+
+            If (slashCount Mod 2) = 0 Then
+                FindJsonStringEnd = i
+                Exit Function
+            End If
+
+            slashCount = 0
+
+        Else
+
+            slashCount = 0
+
+        End If
+
+    Next i
+
+End Function
+
+'==================================================
+' Put the response into a new worksheet
+'==================================================
+
+Private Sub WriteResponseToSheet( _
+    ByVal userPrompt As String, _
+    ByVal responseText As String)
+
+    Dim ws As Worksheet
+    Dim sheetName As String
+
+    Set ws = ThisWorkbook.Worksheets.Add
+
+    sheetName = "Gemini " & Format$(Now, "hhmmss")
+
+    On Error Resume Next
+    ws.Name = sheetName
+    On Error GoTo 0
+
+    ws.Range("A1").value = "Prompt"
+    ws.Range("A2").value = userPrompt
+
+    ws.Range("A4").value = "Gemini response"
+    ws.Range("A5").value = responseText
+
+    ws.Range("A1:A5").WrapText = True
+    ws.Columns("A").ColumnWidth = 110
+    ws.Rows("1:5").EntireRow.AutoFit
+
+    ws.Range("A7").value = _
+        "Generated: " & Format$(Now, "yyyy-mm-dd hh:nn:ss")
+
+End Sub
+
+'==================================================
+' File and Base64 functions
+'==================================================
+
+Private Function ReadBinaryFile( _
+    ByVal filePath As String) As Byte()
+
+    Dim stream As Object
+    Dim bytes() As Byte
+
+    Set stream = CreateObject("ADODB.Stream")
+
+    stream.Type = 1
+    stream.Open
+    stream.LoadFromFile filePath
+
+    bytes = stream.Read
+
+    stream.Close
+
+    ReadBinaryFile = bytes
+
+End Function
+
+Private Function Base64Encode( _
+    ByRef bytes() As Byte) As String
+
+    Dim xml As Object
+    Dim node As Object
+
+    Set xml = CreateObject("MSXML2.DOMDocument.6.0")
+    Set node = xml.createElement("base64")
+
+    node.DataType = "bin.base64"
+    node.nodeTypedValue = bytes
+
+    Base64Encode = Replace(node.Text, vbCr, "")
+    Base64Encode = Replace(Base64Encode, vbLf, "")
+
+End Function
+
+'==================================================
+' JSON and URL encoding
+'==================================================
+
+Private Function JsonEscape(ByVal value As String) As String
+
+    value = Replace(value, "\", "\\")
+    value = Replace(value, """", "\""")
+    value = Replace(value, vbCrLf, "\n")
+    value = Replace(value, vbCr, "\n")
+    value = Replace(value, vbLf, "\n")
+    value = Replace(value, vbTab, "\t")
+
+    JsonEscape = value
+
+End Function
+
+Private Function JsonUnescape(ByVal value As String) As String
+
+    value = Replace(value, "\n", vbCrLf)
+    value = Replace(value, "\r", vbCr)
+    value = Replace(value, "\t", vbTab)
+    value = Replace(value, "\""", """")
+    value = Replace(value, "\\", "\")
+
+    JsonUnescape = value
+
+End Function
+
+Private Function UrlEncode(ByVal value As String) As String
+
+    Dim i As Long
+    Dim character As String
+    Dim characterCode As Long
+    Dim output As String
+
+    For i = 1 To Len(value)
+
+        character = Mid$(value, i, 1)
+        characterCode = AscW(character)
+
+        If _
+            (characterCode >= 48 And characterCode <= 57) Or _
+            (characterCode >= 65 And characterCode <= 90) Or _
+            (characterCode >= 97 And characterCode <= 122) Or _
+            character = "-" Or _
+            character = "_" Or _
+            character = "." Or _
+            character = "~" Then
+
+            output = output & character
+
+        Else
+
+            output = output & "%" & _
+                Right$("0" & Hex$(characterCode), 2)
+
+        End If
+
+    Next i
+
+    UrlEncode = output
+
+End Function
+
+
