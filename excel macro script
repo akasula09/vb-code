@@ -154,33 +154,29 @@ Private Sub HandleGeminiRequest()
     Dim userPrompt As String
     Dim screenshotBase64 As String
     Dim answer As String
+    Dim screenshotCaptured As Boolean
 
     userPrompt = InputBox( _
-        "Enter your prompt for Gemini." & vbCrLf & vbCrLf & _
-        "The current screen will also be sent.", _
+        "Enter your prompt for Gemini.", _
         "Gemini prompt")
 
     If Len(Trim$(userPrompt)) = 0 Then Exit Sub
 
     Application.StatusBar = "Capturing screen..."
 
-    If Not CaptureScreenToBase64(screenshotBase64) Then
-        Application.StatusBar = False
-        MsgBox "The screen could not be captured.", _
-               vbExclamation, "Capture failed"
-        Exit Sub
-    End If
+    'Try to capture screenshot, but don't fail if it doesn't work
+    screenshotCaptured = CaptureScreenToBase64(screenshotBase64)
 
-    Application.StatusBar = "Sending prompt and screenshot to Gemini..."
+    Application.StatusBar = "Sending prompt to Gemini..."
 
     answer = SendToGemini(userPrompt, screenshotBase64)
 
     Application.StatusBar = False
 
     If Left$(answer, 6) = "ERROR:" Then
-        MsgBox answer, vbCritical, "Gemini error"
+        ShowResponseWindow answer, "Gemini Error"
     Else
-        WriteResponseToSheet userPrompt, answer
+        ShowResponseWindow answer, "Gemini Response"
     End If
 
 End Sub
@@ -311,29 +307,50 @@ Private Function SendToGemini( _
         vbCrLf & vbCrLf & _
         userPrompt
 
-    requestBody = _
-        "{" & _
-            """contents"":[" & _
-                "{" & _
-                    """role"":""user""," & _
-                    """parts"":[" & _
-                        "{""text"":""" & _
-                            JsonEscape(combinedPrompt) & _
-                        """}," & _
-                        "{""inline_data"":{" & _
-                            """mime_type"":""image/png""," & _
-                            """data"":""" & _
-                                screenshotBase64 & _
-                            """" & _
-                        "}}" & _
-                    "]" & _
+    'Build request with screenshot if available, otherwise just text
+    If Len(screenshotBase64) > 0 Then
+        requestBody = _
+            "{" & _
+                """contents"":[" & _
+                    "{" & _
+                        """role"":""user""," & _
+                        """parts"":[" & _
+                            "{""text"":""" & _
+                                JsonEscape(combinedPrompt) & _
+                            """}," & _
+                            "{""inline_data"":{" & _
+                                """mime_type"":""image/png""," & _
+                                """data"":""" & _
+                                    screenshotBase64 & _
+                                """" & _
+                            "}}" & _
+                        "]" & _
+                    "}" & _
+                "]," & _
+                """generationConfig"":{" & _
+                    """temperature"":0.2," & _
+                    """maxOutputTokens"":4096" & _
                 "}" & _
-            "]," & _
-            """generationConfig"":{" & _
-                """temperature"":0.2," & _
-                """maxOutputTokens"":4096" & _
-            "}" & _
-        "}"
+            "}"
+    Else
+        requestBody = _
+            "{" & _
+                """contents"":[" & _
+                    "{" & _
+                        """role"":""user""," & _
+                        """parts"":[" & _
+                            "{""text"":""" & _
+                                JsonEscape(combinedPrompt) & _
+                            """}" & _
+                        "]" & _
+                    "}" & _
+                "]," & _
+                """generationConfig"":{" & _
+                    """temperature"":0.2," & _
+                    """maxOutputTokens"":4096" & _
+                "}" & _
+            "}"
+    End If
 
     Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
 
@@ -444,36 +461,14 @@ Private Function FindJsonStringEnd( _
 End Function
 
 '==================================================
-' Put the response into a new worksheet
+' Display response in a separate window (message box)
 '==================================================
 
-Private Sub WriteResponseToSheet( _
-    ByVal userPrompt As String, _
-    ByVal responseText As String)
+Private Sub ShowResponseWindow( _
+    ByVal responseText As String, _
+    ByVal windowTitle As String)
 
-    Dim ws As Worksheet
-    Dim sheetName As String
-
-    Set ws = ThisWorkbook.Worksheets.Add
-
-    sheetName = "Gemini " & Format$(Now, "hhmmss")
-
-    On Error Resume Next
-    ws.Name = sheetName
-    On Error GoTo 0
-
-    ws.Range("A1").value = "Prompt"
-    ws.Range("A2").value = userPrompt
-
-    ws.Range("A4").value = "Gemini response"
-    ws.Range("A5").value = responseText
-
-    ws.Range("A1:A5").WrapText = True
-    ws.Columns("A").ColumnWidth = 110
-    ws.Rows("1:5").EntireRow.AutoFit
-
-    ws.Range("A7").value = _
-        "Generated: " & Format$(Now, "yyyy-mm-dd hh:nn:ss")
+    MsgBox responseText, vbInformation, windowTitle
 
 End Sub
 
@@ -582,4 +577,3 @@ Private Function UrlEncode(ByVal value As String) As String
     UrlEncode = output
 
 End Function
-
