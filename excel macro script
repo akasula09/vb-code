@@ -71,7 +71,7 @@ Public Sub StartGeminiHotkey()
 
     MsgBox _
         "Gemini hotkey watcher started." & vbCrLf & vbCrLf & _
-        "Press Ctrl+Shift+F12 to send a prompt and screenshot." & _
+        "Press Ctrl+Windows+R to send a prompt to Gemini." & _
         vbCrLf & _
         "Run StopGeminiHotkey to stop the watcher.", _
         vbInformation, _
@@ -167,7 +167,11 @@ Private Sub HandleGeminiRequest()
     'Try to capture screenshot, but don't fail if it doesn't work
     screenshotCaptured = CaptureScreenToBase64(screenshotBase64)
 
-    Application.StatusBar = "Sending prompt to Gemini..."
+    If screenshotCaptured Then
+        Application.StatusBar = "Sending prompt with screenshot to Gemini..."
+    Else
+        Application.StatusBar = "Sending prompt to Gemini..."
+    End If
 
     answer = SendToGemini(userPrompt, screenshotBase64)
 
@@ -194,6 +198,7 @@ Private Function CaptureScreenToBase64( _
     Dim temporaryFile As String
     Dim imageBytes() As Byte
     Dim waitAttempts As Long
+    Dim pasteSuccess As Boolean
 
     On Error GoTo CaptureFailed
 
@@ -206,9 +211,11 @@ Private Function CaptureScreenToBase64( _
     keybd_event VK_SNAPSHOT, 0, 0, 0
     keybd_event VK_SNAPSHOT, 0, KEYEVENTF_KEYUP, 0
 
-    'Wait longer and retry if clipboard is empty
+    'Wait and retry if clipboard is empty
     waitAttempts = 0
-    Do While waitAttempts < 10
+    pasteSuccess = False
+    
+    Do While waitAttempts < 10 And Not pasteSuccess
         PauseMilliseconds 200
         DoEvents
         
@@ -217,19 +224,25 @@ Private Function CaptureScreenToBase64( _
 
         On Error Resume Next
         temporarySheet.Paste
-        On Error GoTo CaptureFailed
+        Err.Clear
+        On Error GoTo 0
         
         If temporarySheet.Shapes.Count > 0 Or temporarySheet.ChartObjects.Count > 0 Then
+            pasteSuccess = True
             Exit Do
         Else
+            On Error Resume Next
             temporarySheet.Delete
+            On Error GoTo 0
             waitAttempts = waitAttempts + 1
         End If
     Loop
 
-    If temporarySheet.Shapes.Count = 0 And temporarySheet.ChartObjects.Count = 0 Then
+    If Not pasteSuccess Then
         GoTo CaptureFailed
     End If
+
+    On Error GoTo CaptureFailed
 
     Set chartObject = temporarySheet.ChartObjects.Add( _
         Left:=0, _
