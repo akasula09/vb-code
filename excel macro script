@@ -197,21 +197,43 @@ Private Function CaptureScreenToBase64( _
     Dim chartObject As chartObject
     Dim temporaryFile As String
     Dim imageBytes() As Byte
+    Dim waitAttempts As Long
 
     On Error GoTo CaptureFailed
 
     Set oldSheet = ActiveSheet
 
     Application.CutCopyMode = False
+    Application.ScreenUpdating = False
 
     'Press the Windows Print Screen key.
     keybd_event VK_SNAPSHOT, 0, 0, 0
     keybd_event VK_SNAPSHOT, 0, KEYEVENTF_KEYUP, 0
 
-    PauseMilliseconds 300
+    'Wait longer and retry if clipboard is empty
+    waitAttempts = 0
+    Do While waitAttempts < 10
+        PauseMilliseconds 200
+        DoEvents
+        
+        Set temporarySheet = ThisWorkbook.Worksheets.Add
+        temporarySheet.Visible = xlSheetVeryHidden
 
-    Set temporarySheet = ThisWorkbook.Worksheets.Add
-    temporarySheet.Visible = xlSheetVeryHidden
+        On Error Resume Next
+        temporarySheet.Paste
+        On Error GoTo CaptureFailed
+        
+        If temporarySheet.Shapes.Count > 0 Or temporarySheet.ChartObjects.Count > 0 Then
+            Exit Do
+        Else
+            temporarySheet.Delete
+            waitAttempts = waitAttempts + 1
+        End If
+    Loop
+
+    If temporarySheet.Shapes.Count = 0 And temporarySheet.ChartObjects.Count = 0 Then
+        GoTo CaptureFailed
+    End If
 
     Set chartObject = temporarySheet.ChartObjects.Add( _
         Left:=0, _
@@ -241,6 +263,7 @@ Private Function CaptureScreenToBase64( _
     Kill temporaryFile
     temporarySheet.Delete
     oldSheet.Activate
+    Application.ScreenUpdating = True
 
     On Error GoTo 0
 
@@ -254,6 +277,7 @@ CaptureFailed:
     If Len(temporaryFile) > 0 Then Kill temporaryFile
     If Not temporarySheet Is Nothing Then temporarySheet.Delete
     If Not oldSheet Is Nothing Then oldSheet.Activate
+    Application.ScreenUpdating = True
 
     On Error GoTo 0
 
@@ -558,5 +582,4 @@ Private Function UrlEncode(ByVal value As String) As String
     UrlEncode = output
 
 End Function
-
 
